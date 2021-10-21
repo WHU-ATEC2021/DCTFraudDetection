@@ -102,13 +102,13 @@ class ParameterServer(object):
             pickle.dump(model,fout)
 
     def save_testdata_prediction(self, model, device, test_batch_size):
-        self.test_data
         loader = torch.utils.data.DataLoader(
             self.predict_data,
             batch_size=test_batch_size,
             shuffle=False,
         )
         prediction = []
+        model.eval()
         with torch.no_grad():
             for data in loader:
                 pred = model(data.to(device)).argmax(dim=1, keepdim=True)
