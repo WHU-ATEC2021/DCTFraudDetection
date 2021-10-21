@@ -28,7 +28,7 @@ class FedSGDTestSuit(unittest.TestCase):
         self.batch_size = 64
         self.test_batch_size = 1000
         self.lr = 0.001
-        self.n_max_rounds = 400
+        self.n_max_rounds = 300
         self.log_interval = 20
         self.n_round_samples = 1600
         self.testbase = self.TEST_BASE_DIR
