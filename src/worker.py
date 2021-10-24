@@ -1,8 +1,7 @@
-from typing import Tuple
-
 import torch
 import torch.nn.functional as F
 import os
+import math
 import pickle
 
 import numpy as np
@@ -14,39 +13,22 @@ from preprocess import CompDataset
 from preprocess import get_user_data
 
 
-_FEAT_INDICES = [
-    73, 48, 20, 26, 84, 91, 22, 47,
-    17, 23, 11, 92, 152, 104, 89
-]
-
 class Worker(object):
-    def __init__(self, user_idx, frame: int = 5):
+    def __init__(self, user_idx):
         self.user_idx = user_idx
-        self.data, self.edges = get_user_data(user_idx)
+        self._data,self.edges = get_user_data(self.user_idx)  # The worker can only access its own data
         self.ps_info = {}
 
-    @staticmethod
-    def _get_frame_data(user_idx: int, frame: int) -> Tuple[pd.DataFrame, pd.DataFrame]:
-        datas = []
-        edges = []
-        for i in range(max(0, user_idx - frame), min(40, user_idx + frame)):
-            data_i, edges_i = get_user_data(i)
-            datas.append(data_i)
-            edges.append(edges_i)
-
-        return pd.concat(datas, axis=0), pd.concat(edges, axis=0)
-
     def preprocess_worker_data(self):
-        self.data = self.data[self.data['class'] != 2]
+        self.data = self._data[self._data['class']!=2]
         x = self.data.iloc[:, 2:]
-        x = x.iloc[:, _FEAT_INDICES]
         x = x.reset_index(drop=True)
         x = x.to_numpy().astype(np.float32)
         y = self.data['class']
         y = y.reset_index(drop=True)
         x[x == np.inf] = 1.
         x[np.isnan(x)] = 0.
-        self.data = (x, y)
+        self.data = (x,y)
 
     def round_data(self, n_round, n_round_samples=-1):
         """Generate data for user of user_idx at round n_round.
@@ -63,18 +45,63 @@ class Worker(object):
         choices = np.random.choice(n_samples, min(n_samples, n_round_samples))
 
         return self.data[0][choices], self.data[1][choices]
-
-    def receive_server_info(self, info):  # receive info from PS
+    
+    def receive_server_info(self, info): # receive info from PS
         self.ps_info = info
-
-    # process the "mean_round_train_acc" info from server
-    def process_mean_round_train_acc(self):
+    
+    def process_mean_round_train_acc(self): # process the "mean_round_train_acc" info from server
         mean_round_train_acc = self.ps_info["mean_round_train_acc"]
         # You can go on to do more processing if needed
+        
+    def _ssl_data_augment(self, model) -> None:
+        device = "cpu"
+        unknown_data = self._data[self._data['class'] == 2]
+        print(f"original data shape: {self.data[0].shape}")
+        x = unknown_data.iloc[:, 2:]
+        x = x.reset_index(drop=True)
+        x = x.to_numpy().astype(np.float32)
+        x[x == np.inf] = 1.
+        x[np.isnan(x)] = 0.
+        
+        loader = torch.utils.data.DataLoader(
+            x,
+            batch_size=64,
+            shuffle=False,
+        )
+        x_list = []
+        y_list = []
+        model.eval()
+        with torch.no_grad():
+            for data in loader:
+                pred_y = model(data.to(device))
+                mask_y = pred_y.gt(math.log(0.98))
+                mask_y = mask_y[:, 0] | mask_y[:, 1]
+                pred_y = torch.argmax(pred_y, dim=1)
+                selected_y = pred_y[mask_y]
+                selected_x = data[mask_y, :]
+                
+                mask_y0 = selected_y.eq(0)
+                selected_y = selected_y[mask_y0]
+                selected_x = selected_x[mask_y0, :]
+                
+                x_list.append(selected_x.numpy())
+                y_list.append(selected_y.numpy())
+                
+        xs = np.concatenate(x_list, axis=0)
+        ys = np.concatenate(y_list, axis=0)
+        
+        
+        nx = np.concatenate([self.data[0], xs], axis=0)
+        ny = np.concatenate([self.data[1], ys], axis=0)
+        self.data = (nx, ny)
+        
+        print(f"augment data shape: {self.data[0].shape}")
+        print(f"user: {self.user_idx} augment data done")
+        
 
     def user_round_train(self, model, device, n_round,  batch_size, n_round_samples=-1, debug=False):
 
-        X, Y = self.round_data(n_round, n_round_samples)
+        X,Y = self.round_data(n_round, n_round_samples)
         data = CompDataset(X=X, Y=Y)
         train_loader = torch.utils.data.DataLoader(
             data,
@@ -107,7 +134,7 @@ class Worker(object):
         grads = {'n_samples': data.shape[0], 'named_grads': {}}
         for name, param in model.named_parameters():
             grads['named_grads'][name] = param.grad.detach().cpu().numpy()
-
+        
         worker_info = {}
         worker_info["train_acc"] = correct / len(train_loader.dataset)
 

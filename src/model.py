@@ -47,12 +47,15 @@ class FedSGDTestSuit(unittest.TestCase):
             os.makedirs(self.RESULT_DIR)
 
         self.ps = ParameterServer(init_model_path=self.init_model_path,
-                                  testworkdir=self.testworkdir,resultdir=self.RESULT_DIR)
-        
+                                  testworkdir=self.testworkdir, resultdir=self.RESULT_DIR)
+
         self.workers = []
         for u in range(0, self.n_users):
             self.workers.append(Worker(user_idx=u))
-            
+
+        #! 半监督学习
+        self._pre_train_rounds = 100
+
     @staticmethod
     def set_seed(seed_val: int) -> None:
         print(f"using seed: {seed_val}")
@@ -67,6 +70,51 @@ class FedSGDTestSuit(unittest.TestCase):
     def tearDown(self):
         self._clear()
 
+    def _pretrain(self) -> None:
+        device = torch.device("cuda" if self.use_cuda else "cpu")
+        training_start = datetime.now()
+        model = None
+        for r in range(1, self._pre_train_rounds + 1):
+            path = self.ps.get_latest_model()
+            start = datetime.now()
+            for u in range(0, self.n_users):
+                model = FLModel()
+                model.load_state_dict(torch.load(path))
+                model = model.to(device)
+                grads, worker_info = self.workers[u].user_round_train(model=model, device=device, n_round=r, batch_size=self.batch_size,
+                                                                      n_round_samples=self.n_round_samples)
+
+                self.ps.receive_grads_info(grads=grads)
+                # The transfer of information from the worker to the server requires a call to the "ps.receive_worker_info"
+                self.ps.receive_worker_info(worker_info)
+                self.ps.process_round_train_acc()
+
+            self.ps.aggregate()
+            print('\npretrain Round {} cost: {}, total training cost: {}'.format(
+                r,
+                datetime.now() - start,
+                datetime.now() - training_start,
+            ))
+
+            if model is not None and r % self.log_interval == 0:
+                # print average train acc and return
+                server_info = self.ps.print_round_train_acc()
+                # transport average train acc to each worker
+                for u in range(0, self.n_users):
+                    # The transfer of information from the server to the worker requires a call to the "worker.receive_server_info"
+                    self.workers[u].receive_server_info(server_info)
+                    # workers do processing
+                    self.workers[u].process_mean_round_train_acc()
+
+        print("data augmentation")
+        for u in range(0, self.n_users):
+            self.workers[u]._ssl_data_augment(
+                model=model
+            )
+
+        self.ps = ParameterServer(init_model_path=self.init_model_path,
+                                  testworkdir=self.testworkdir, resultdir=self.RESULT_DIR)
+
     def test_federated_SGD(self):
         torch.manual_seed(self.seed)
         device = torch.device("cuda" if self.use_cuda else "cpu")
@@ -74,6 +122,8 @@ class FedSGDTestSuit(unittest.TestCase):
         # 初始化每个workers的数据
         for u in range(0, self.n_users):
             self.workers[u].preprocess_worker_data()
+
+        self._pretrain()
 
         training_start = datetime.now()
         model = None
