@@ -5,7 +5,7 @@ import torch.nn.functional as F
 class FLModel(nn.Module):
     def __init__(self):
         super().__init__()
-        self.fc1 = nn.Linear(165, 50)
+        self.fc1 = nn.Linear(15, 50)
         self.fc5 = nn.Linear(50, 2)
 
     def forward(self, x):

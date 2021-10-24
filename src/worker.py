@@ -14,14 +14,15 @@ from preprocess import CompDataset
 from preprocess import get_user_data
 
 
+_FEAT_INDICES = [
+    73, 48, 20, 26, 84, 91, 22, 47,
+    17, 23, 11, 92, 152, 104, 89
+]
+
 class Worker(object):
     def __init__(self, user_idx, frame: int = 5):
         self.user_idx = user_idx
-        self.data, self.edges = self._get_frame_data(
-            user_idx, frame)  # The worker can only access its own data
-        # print(
-            # f"user: {user_idx}, data shape: {self.data.shape}, edges shape: {self.edges.shape}"
-        # )
+        self.data, self.edges = get_user_data(user_idx)
         self.ps_info = {}
 
     @staticmethod
@@ -38,6 +39,7 @@ class Worker(object):
     def preprocess_worker_data(self):
         self.data = self.data[self.data['class'] != 2]
         x = self.data.iloc[:, 2:]
+        x = x.iloc[:, _FEAT_INDICES]
         x = x.reset_index(drop=True)
         x = x.to_numpy().astype(np.float32)
         y = self.data['class']
